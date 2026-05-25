@@ -1,0 +1,81 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  publish:
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+
+    permissions:
+      id-token: write   # for trusted publishing
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          python - << 'EOF'
+          import pathlib
+          import re
+          import sys
+          import tomllib
+
+          ref = "${{ github.ref_name }}"
+          m = re.fullmatch(r"v(\d+\.\d+\.\d+)", ref)
+          if not m:
+              print(f"Tag {ref!r} must match vX.Y.Z")
+              sys.exit(1)
+
+          tag_version = m.group(1)
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          pkg_version = data["project"]["version"]
+
+          if tag_version != pkg_version:
+              print(f"Version mismatch: tag={tag_version}, pyproject={pkg_version}")
+              sys.exit(1)
+
+          print(f"Version check passed: {pkg_version}")
+          EOF
+
+      - name: Build
+        run: |
+          pip install hatchling build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
