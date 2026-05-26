@@ -6,6 +6,8 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [axor-core-published]
 
 jobs:
   test:
@@ -17,6 +19,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log trigger context
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          echo "Triggered by axor-core ${{ github.event.client_payload.version }}"
+
+      - name: Install axor-core from PyPI (pinned to triggering version)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          pip install "axor-core==${{ github.event.client_payload.version }}"
 
       - uses: actions/setup-python@v5
         with:
