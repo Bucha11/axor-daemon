@@ -29,9 +29,13 @@ from axor_core.contracts.policy import ExecutionPolicy
 
 _log = logging.getLogger("axor.daemon.enforcer")
 
-# Path-like args the enforcer normalizes independently.
-# Handlers may have additional args — only these are path-normalized.
-_PATH_ARG_KEYS = frozenset({"path", "file", "filepath", "filename", "target"})
+# Path-like args the enforcer normalizes (and sandbox-validates) independently.
+# Must stay aligned with axor-core's path-extraction aliases so a handler reading
+# e.g. file_path cannot receive an un-normalized, sandbox-escaping value.
+_PATH_ARG_KEYS = frozenset({
+    "path", "file", "file_path", "filepath", "filename", "target",
+    "dir", "directory", "dest", "destination", "output", "src", "source",
+})
 
 # Default max seconds any single handler.execute() may run.
 _DEFAULT_EXEC_TIMEOUT = 60.0

@@ -73,7 +73,7 @@ A client that sends an inflated `allowed_tools` list or crafted path args cannot
 pip install axor-daemon
 ```
 
-Requires `axor-core >= 0.5.0, < 0.6`. Zero additional dependencies — stdlib `asyncio` only.
+Requires `axor-core >= 0.7.0, < 0.8`. Zero additional dependencies — stdlib `asyncio` only.
 
 ---
 
@@ -135,9 +135,15 @@ axor-daemon start --policy expansive            # full capability surface
 ```
 axor-daemon start [options]
 
-  --socket PATH      Unix socket path (default: ~/.axor/daemon.sock)
-  --policy NAME      Operator policy ceiling (default: focused_generative)
-  --log-level LEVEL  DEBUG | INFO | WARNING | ERROR (default: INFO)
+  --socket PATH         Unix socket path (default: ~/.axor/daemon.sock)
+  --policy NAME         Operator policy ceiling (default: focused_generative)
+  --log-level LEVEL     DEBUG | INFO | WARNING | ERROR (default: INFO)
+  --handler MODULE:CLASS
+                        Register a ToolHandler. Repeatable.
+                        Example: --handler axor_claude.tools.read:ReadHandler
+  --sandbox-root PATH   Filesystem root for daemon-side path args. Path args
+                        resolving outside this root are denied. Also settable
+                        via AXOR_DAEMON_SANDBOX_ROOT.
 ```
 
 ---
@@ -226,7 +232,7 @@ For stronger guarantees, combine axor-daemon with OS-level sandboxing (seccomp, 
 ## Requirements
 
 - Python 3.11+
-- [`axor-core`](https://github.com/Bucha11/axor-core) >= 0.5.0
+- [`axor-core`](https://github.com/Bucha11/axor-core) >= 0.7.0, < 0.8
 - No additional dependencies — stdlib `asyncio` only
 
 ---

@@ -14,6 +14,7 @@ import stat
 from typing import Any
 
 from axor_core.contracts.daemon import encode_message, read_message, PROTOCOL_VERSION
+from axor_core.capability.session_grant import session_key_configured, verify_grant
 
 from axor_daemon.enforcer import DaemonEnforcer
 
@@ -159,7 +160,25 @@ class DaemonServer:
             call_id: str = msg.get("call_id", "")
             tool: str = msg.get("tool", "")
             args: dict[str, Any] = msg.get("args", {})
-            client_allowed: frozenset[str] = frozenset(msg.get("allowed_tools", []))
+
+            # Derive the session ceiling. When a session key is configured the
+            # daemon trusts only a verified, signed grant — never the plaintext
+            # allowed_tools claim (which any same-user process could inflate).
+            if session_key_configured():
+                grant = verify_grant(msg.get("grant"))
+                if grant is None:
+                    writer.write(encode_message({
+                        "type": "tool_result",
+                        "call_id": call_id,
+                        "decision": "denied",
+                        "result": None,
+                        "denial_reason": "invalid or missing session grant",
+                    }))
+                    await writer.drain()
+                    continue
+                client_allowed = frozenset(grant.get("allowed_tools", []))
+            else:
+                client_allowed = frozenset(msg.get("allowed_tools", []))
 
             decision, result, denial_reason = await self._enforcer.execute(
                 call_id=call_id,

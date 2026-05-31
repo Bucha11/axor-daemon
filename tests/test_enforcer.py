@@ -156,6 +156,26 @@ async def test_sandbox_root_denies_parent_traversal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sandbox_root_denies_file_path_alias_traversal(tmp_path):
+    """H2: a handler reading file_path (not path) must also be sandbox-checked."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    enforcer = DaemonEnforcer(
+        operator_policy=_readonly_policy(),
+        handlers={"read": _EchoHandler()},
+        sandbox_root=str(sandbox),
+    )
+    decision, result, reason = await enforcer.execute(
+        call_id="fp1",
+        tool="read",
+        args={"file_path": "../../etc/passwd"},  # alias, previously un-normalized
+        client_allowed_tools=frozenset(["read"]),
+    )
+    assert decision == "denied"
+    assert "outside daemon sandbox root" in reason
+
+
+@pytest.mark.asyncio
 async def test_sandbox_root_denies_prefix_sibling(tmp_path):
     sandbox = tmp_path / "sandbox"
     sibling = tmp_path / "sandbox-secret"

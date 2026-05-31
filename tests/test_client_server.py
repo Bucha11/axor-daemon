@@ -5,7 +5,6 @@ No subprocess — both run in the same test event loop for simplicity.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import pytest
 
@@ -113,6 +112,34 @@ async def test_bash_denied_by_operator_policy(daemon_socket):
     with pytest.raises(ToolNotAllowedError):
         await client.execute(intent, caps)
 
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_session_grant_roundtrip(daemon_socket, monkeypatch):
+    """With a session key, the legit client attaches a grant and the call works."""
+    monkeypatch.setenv("AXOR_DAEMON_SESSION_KEY", "shared-secret")
+    client = DaemonCapabilityClient(socket_path=daemon_socket)
+    result = await client.execute(
+        _make_intent("read", {"path": "a.py"}), _make_capabilities({"read"})
+    )
+    assert result == "contents:a.py"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_missing_grant_denied_when_key_set(daemon_socket, monkeypatch):
+    """A client without the key (no grant) is denied when the daemon requires one."""
+    monkeypatch.setenv("AXOR_DAEMON_SESSION_KEY", "shared-secret")
+    # Simulate a rogue same-user process that cannot mint a grant.
+    monkeypatch.setattr(
+        "axor_core.capability.daemon_client.issue_grant", lambda *a, **k: None
+    )
+    client = DaemonCapabilityClient(socket_path=daemon_socket)
+    with pytest.raises(ToolNotAllowedError):
+        await client.execute(
+            _make_intent("read", {"path": "a.py"}), _make_capabilities({"read"})
+        )
     await client.aclose()
 
 

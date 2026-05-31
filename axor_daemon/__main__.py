@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import importlib
 import logging
+import os
 import signal
 import sys
 
@@ -182,8 +183,17 @@ def main() -> None:
         "--sandbox-root",
         default=os.environ.get("AXOR_DAEMON_SANDBOX_ROOT"),
         help=(
-            "Optional filesystem root for daemon-side path args. "
-            "Also configurable via AXOR_DAEMON_SANDBOX_ROOT."
+            "Filesystem root for daemon-side path args. Path args resolving "
+            "outside it are denied. Also via AXOR_DAEMON_SANDBOX_ROOT. Required "
+            "unless --unsafe-no-sandbox is given."
+        ),
+    )
+    start_p.add_argument(
+        "--unsafe-no-sandbox",
+        action="store_true",
+        help=(
+            "Run without a filesystem sandbox root. Path containment then depends "
+            "entirely on handlers and the operator policy. Not recommended."
         ),
     )
 
@@ -192,6 +202,15 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(0)
+
+    # Fail-closed: a missing sandbox root must be an explicit, acknowledged choice.
+    if args.command == "start" and not args.sandbox_root and not args.unsafe_no_sandbox:
+        print(
+            "Refusing to start without a filesystem sandbox: pass --sandbox-root PATH "
+            "(or AXOR_DAEMON_SANDBOX_ROOT), or --unsafe-no-sandbox to opt out.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),

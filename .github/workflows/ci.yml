@@ -20,24 +20,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log trigger context
-        if: github.event_name == 'repository_dispatch'
-        run: |
-          echo "Triggered by axor-core ${{ github.event.client_payload.version }}"
-
-      - name: Install axor-core from PyPI (pinned to triggering version)
-        if: github.event_name == 'repository_dispatch'
-        run: |
-          pip install "axor-core==${{ github.event.client_payload.version }}"
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Log trigger context
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          echo "Triggered by axor-core ${{ github.event.client_payload.version }}"
+
       - name: Install
         run: |
           pip install -e ".[dev]"
+
+      # Install AFTER setup-python so it lands in the matrix interpreter, not the
+      # runner default. This overrides the editable install's resolved axor-core
+      # with the exact version that triggered the rebuild.
+      - name: Override axor-core to triggering version
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          pip install "axor-core==${{ github.event.client_payload.version }}"
+
+      - name: Dependency pin freshness — installed axor-core must satisfy our pin
+        run: |
+          pip install packaging
+          python - << 'EOF'
+          import pathlib, sys, tomllib
+          from importlib.metadata import version
+          from packaging.requirements import Requirement
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          reqs = [Requirement(r) for r in data["project"]["dependencies"]]
+          core = next(r for r in reqs if r.name == "axor-core")
+          installed = version("axor-core")
+          if not core.specifier.contains(installed, prereleases=True):
+              print(
+                  f"axor-core {installed} is OUTSIDE the declared pin "
+                  f"'{core.specifier}'. Bump the pin in pyproject.toml.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(f"OK: axor-core {installed} satisfies '{core.specifier}'")
+          EOF
+
+      - name: CLI smoke — entry point must launch
+        run: |
+          python -m axor_daemon start --help
+          axor-daemon start --help
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
