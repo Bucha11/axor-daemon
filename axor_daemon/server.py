@@ -144,6 +144,10 @@ class DaemonServer:
         writer.write(encode_message({"type": "ready"}))
         await writer.drain()
 
+        # One per-session data-flow governor (its own taint ledger / confidentiality
+        # floor for this connection), built from the operator-configured taxonomy.
+        governor = self._enforcer.new_session_governor()
+
         # ── Request loop ───────────────────────────────────────────────────────
         while True:
             msg = await asyncio.wait_for(read_message(reader), timeout=_READ_TIMEOUT)
@@ -166,6 +170,7 @@ class DaemonServer:
                 tool=tool,
                 args=args,
                 client_allowed_tools=client_allowed,
+                governor=governor,
             )
 
             response = {

@@ -44,9 +44,11 @@ Every tool call passes independent checks in the daemon:
 
 **4. Client ceiling** — `allowed_tools` reported by the client's `GovernedSession`. Both the operator ceiling and the client ceiling must approve the tool. The client can only narrow below the operator ceiling, never escalate above it.
 
-**5. Arg normalization** — path-like args (`path`, `file`, `target`, etc.) are normalized with `os.path.normpath` by the daemon independently before being passed to any handler. A `../` traversal sequence in a client-supplied path cannot reach a handler unnormalized.
+**5. Data-flow gates (server-side)** — the daemon hosts a per-session `ToolCallGovernor` (axor-core's gate engine) with its own taint ledger and confidentiality floor. Before any handler runs it evaluates the per-value gates — taint (integrity), the confidentiality floor, consequence, carrier, positional — and registers each tool's output afterward. This is what survives a *code-compromised* worker that sends raw tool calls bypassing its own in-process `IntentLoop`: an exfiltration through an allowed egress tool, driven by a value the daemon saw arrive from an untrusted read, is denied here. The taxonomy (`--untrusted-source`, `--sensitive-source`, `--egress-sink`) is set by the **operator at daemon startup**, never by the client, so a compromised worker cannot disable it.
 
-**6. Exec timeout** — every handler execution is bounded by `exec_timeout` (default: 60s). A handler that exceeds the timeout returns `DENIED` — it does not hang the daemon session.
+**6. Arg normalization** — path-like args (`path`, `file`, `target`, etc.) are normalized with `os.path.normpath` by the daemon independently before being passed to any handler. A `../` traversal sequence in a client-supplied path cannot reach a handler unnormalized.
+
+**7. Exec timeout** — every handler execution is bounded by `exec_timeout` (default: 60s). A handler that exceeds the timeout returns `DENIED` — it does not hang the daemon session.
 
 ```
 Client sends: tool="bash", allowed_tools=["bash", "read"]
@@ -135,9 +137,21 @@ axor-daemon start --policy expansive            # full capability surface
 ```
 axor-daemon start [options]
 
-  --socket PATH      Unix socket path (default: ~/.axor/daemon.sock)
-  --policy NAME      Operator policy ceiling (default: focused_generative)
-  --log-level LEVEL  DEBUG | INFO | WARNING | ERROR (default: INFO)
+  --socket PATH         Unix socket path (default: ~/.axor/daemon.sock)
+  --policy NAME         Operator policy ceiling (default: focused_generative)
+  --sandbox-root PATH   Filesystem root for daemon-side path args
+  --untrusted-source T  A read tool whose output is untrusted (repeatable)
+  --sensitive-source T  A read tool whose output is secret — arms the floor (repeatable)
+  --egress-sink T       A tool that leaves the trust boundary (repeatable)
+  --log-level LEVEL     DEBUG | INFO | WARNING | ERROR (default: INFO)
+```
+
+Example — a RAG email agent where the document store is untrusted and email is egress:
+
+```
+axor-daemon start --policy focused_generative \
+  --handler my.handlers:SearchDocs --handler my.handlers:SendEmail \
+  --untrusted-source search_docs --egress-sink send_email
 ```
 
 ---

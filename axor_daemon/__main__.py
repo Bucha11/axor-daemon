@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import importlib
 import logging
+import os
 import signal
 import sys
 
@@ -103,12 +104,15 @@ def _load_handlers(specs: list[str]) -> dict:
     return handlers
 
 
-def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None):
+def _build_enforcer(
+    operator_policy, handlers: dict, sandbox_root: str | None = None, **taxonomy,
+):
     from axor_daemon.enforcer import DaemonEnforcer
     return DaemonEnforcer(
         operator_policy=operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
+        **taxonomy,
     )
 
 
@@ -117,6 +121,10 @@ async def _run(
     policy_name: str,
     handler_specs: list[str],
     sandbox_root: str | None = None,
+    *,
+    untrusted_sources: set[str] | None = None,
+    sensitive_sources: set[str] | None = None,
+    egress_sinks: set[str] | None = None,
 ) -> None:
     from axor_daemon.server import DaemonServer
 
@@ -126,6 +134,9 @@ async def _run(
         operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
+        untrusted_sources=untrusted_sources or set(),
+        sensitive_sources=sensitive_sources or set(),
+        egress_sinks=egress_sinks or set(),
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -186,6 +197,20 @@ def main() -> None:
             "Also configurable via AXOR_DAEMON_SANDBOX_ROOT."
         ),
     )
+    # Operator-configured data-flow taxonomy — set here, not by the client, so a
+    # compromised worker cannot disable the per-value gates. Repeatable.
+    start_p.add_argument(
+        "--untrusted-source", action="append", default=[], metavar="TOOL",
+        help="A read tool whose output is untrusted (repeatable).",
+    )
+    start_p.add_argument(
+        "--sensitive-source", action="append", default=[], metavar="TOOL",
+        help="A read tool whose output is secret — arms the confidentiality floor (repeatable).",
+    )
+    start_p.add_argument(
+        "--egress-sink", action="append", default=[], metavar="TOOL",
+        help="A tool that leaves the trust boundary — gated when tainted-driven (repeatable).",
+    )
 
     args = parser.parse_args()
 
@@ -198,7 +223,12 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root))
+    asyncio.run(_run(
+        args.socket, args.policy, args.handlers, args.sandbox_root,
+        untrusted_sources=set(args.untrusted_source),
+        sensitive_sources=set(args.sensitive_source),
+        egress_sinks=set(args.egress_sink),
+    ))
 
 
 if __name__ == "__main__":

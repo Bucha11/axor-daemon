@@ -25,7 +25,9 @@ from typing import Any
 
 from axor_core.capability.executor import ToolHandler
 from axor_core.capability.resolver import CapabilityResolver
+from axor_core.contracts.canonical import ConsequenceClass
 from axor_core.contracts.policy import ExecutionPolicy
+from axor_core.governor import ToolCallGovernor
 
 _log = logging.getLogger("axor.daemon.enforcer")
 
@@ -44,6 +46,13 @@ class DaemonEnforcer:
         handlers: dict[str, ToolHandler],
         exec_timeout: float = _DEFAULT_EXEC_TIMEOUT,
         sandbox_root: str | None = None,
+        *,
+        untrusted_sources: "set[str] | frozenset[str] | None" = None,
+        sensitive_sources: "set[str] | frozenset[str] | None" = None,
+        egress_sinks: "set[str] | frozenset[str] | None" = None,
+        positional_sinks: "set[str] | frozenset[str] | None" = None,
+        value_policies: dict | None = None,
+        consequence_overrides: dict | None = None,
     ) -> None:
         self._operator_policy = operator_policy
         self._handlers = handlers
@@ -56,12 +65,35 @@ class DaemonEnforcer:
         caps = resolver.resolve(operator_policy)
         self._operator_allowed: frozenset[str] = caps.allowed_tools
 
+        # Operator-configured data-flow taxonomy. Set here at daemon startup — NOT
+        # taken from the client — so a compromised worker cannot disable the
+        # data-flow gates by declaring an empty taxonomy. Empty by default: the
+        # normalizer's generic heuristics still apply to every call.
+        self._governor_kwargs = dict(
+            untrusted_sources=set(untrusted_sources or ()),
+            sensitive_sources=set(sensitive_sources or ()),
+            egress_sinks=set(egress_sinks or ()),
+            positional_sinks=set(positional_sinks or ()),
+            value_policies=dict(value_policies or {}),
+            consequence_overrides=dict(consequence_overrides or {}),
+            max_unattended_consequence=getattr(
+                operator_policy, "max_unattended_consequence",
+                ConsequenceClass.CONSEQUENTIAL,
+            ),
+        )
+
+    def new_session_governor(self) -> ToolCallGovernor:
+        """A fresh per-connection governor (its own taint ledger / floor), using
+        the operator-configured taxonomy. One per session; the server holds it."""
+        return ToolCallGovernor(**self._governor_kwargs)
+
     async def execute(
         self,
         call_id: str,
         tool: str,
         args: dict[str, Any],
         client_allowed_tools: frozenset[str],
+        governor: ToolCallGovernor | None = None,
     ) -> tuple[str, Any, str | None]:
         """
         Validate and execute a tool call.
@@ -89,6 +121,21 @@ class DaemonEnforcer:
             _log.warning("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
             return "denied", None, reason
 
+        # data-flow gate — evaluated daemon-side, server-side of the trust boundary.
+        # This is what makes taint / confidentiality-floor / consequence enforcement
+        # survive a compromised worker that sends a raw tool_call bypassing its own
+        # in-process IntentLoop: the daemon re-runs the per-value gates against its
+        # OWN ledger before touching the handler.
+        gov_decision = None
+        if governor is not None:
+            gov_decision = governor.evaluate(tool, args)
+            if not gov_decision.allowed:
+                _log.info(
+                    "DENIED call_id=%s tool=%s: data-flow gate (%s)",
+                    call_id, tool, gov_decision.category,
+                )
+                return "denied", None, gov_decision.reason
+
         try:
             safe_args = _normalize_path_args(args, sandbox_root=self._sandbox_root)
         except ValueError as exc:
@@ -104,6 +151,11 @@ class DaemonEnforcer:
             reason = f"handler '{tool}' exceeded exec_timeout ({self._exec_timeout}s)"
             _log.error("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
             return "denied", None, reason
+
+        # Register the output so a later sink carrying it is gated — the daemon's
+        # own per-value ledger, independent of whatever the worker tracks.
+        if governor is not None and gov_decision is not None:
+            governor.register_output(gov_decision, result)
 
         _log.debug("APPROVED call_id=%s tool=%s", call_id, tool)
         return "approved", result, None
