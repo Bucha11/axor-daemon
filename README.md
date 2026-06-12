@@ -139,14 +139,28 @@ axor-daemon start [options]
 
   --socket PATH         Unix socket path (default: ~/.axor/daemon.sock)
   --policy NAME         Operator policy ceiling (default: focused_generative)
+  --config PATH         A governance.yaml — the full data-flow taxonomy, including
+                        value_policies / driving_args the flags cannot express
   --sandbox-root PATH   Filesystem root for daemon-side path args
-  --untrusted-source T  A read tool whose output is untrusted (repeatable)
+  --untrusted-source T  A read tool whose output is untrusted (repeatable; merges with --config)
   --sensitive-source T  A read tool whose output is secret — arms the floor (repeatable)
   --egress-sink T       A tool that leaves the trust boundary (repeatable)
   --log-level LEVEL     DEBUG | INFO | WARNING | ERROR (default: INFO)
 ```
 
-Example — a RAG email agent where the document store is untrusted and email is egress:
+The recommended way to configure the taxonomy is a shared `governance.yaml` (the same
+file the in-process `GovernedSession` loads) — it can express `value_policies` and
+`driving_args`, which the repeatable flags cannot. The daemon uses only the data-flow
+taxonomy from it; the ceiling comes from `--policy`, and the config's `mode` /
+`workspace` / `federation` are worker-side concerns the daemon ignores.
+
+```
+axor-daemon start --policy focused_generative \
+  --handler my.handlers:SearchDocs --handler my.handlers:SendEmail \
+  --config /etc/axor/governance.yaml
+```
+
+Or quick flags for a simple setup:
 
 ```
 axor-daemon start --policy focused_generative \

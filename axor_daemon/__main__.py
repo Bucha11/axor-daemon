@@ -116,12 +116,31 @@ def _build_enforcer(
     )
 
 
+def _taxonomy_from_config(path: str) -> dict:
+    """Load the data-flow taxonomy from a GovernanceConfig YAML. Only the taxonomy
+    is used here (sources / sinks / value_policies / consequence / driving_args);
+    the config's mode, workspace and federation are session-side concerns the
+    worker applies, not the daemon (the daemon's ceiling is --policy)."""
+    from axor_core import GovernanceConfig
+    cfg = GovernanceConfig.from_yaml(path)
+    return dict(
+        untrusted_sources=set(cfg.untrusted_sources),
+        sensitive_sources=set(cfg.sensitive_sources),
+        egress_sinks=set(cfg.egress_sinks),
+        positional_sinks=set(cfg.positional_sinks),
+        value_policies=dict(cfg.value_policies),
+        consequence_overrides=dict(cfg.consequence_overrides),
+        driving_args=dict(cfg.driving_args),
+    )
+
+
 async def _run(
     socket_path: str,
     policy_name: str,
     handler_specs: list[str],
     sandbox_root: str | None = None,
     *,
+    config_path: str | None = None,
     untrusted_sources: set[str] | None = None,
     sensitive_sources: set[str] | None = None,
     egress_sinks: set[str] | None = None,
@@ -130,13 +149,18 @@ async def _run(
 
     operator_policy = _build_operator_policy(policy_name)
     handlers = _load_handlers(handler_specs)
+    # A --config YAML supplies the full taxonomy (incl. value_policies / driving_args
+    # that the flags cannot express). The repeatable flags then merge on top, so a
+    # flag can extend a config-declared source/sink set.
+    taxonomy = _taxonomy_from_config(config_path) if config_path else {}
+    taxonomy["untrusted_sources"] = set(taxonomy.get("untrusted_sources", set())) | (untrusted_sources or set())
+    taxonomy["sensitive_sources"] = set(taxonomy.get("sensitive_sources", set())) | (sensitive_sources or set())
+    taxonomy["egress_sinks"] = set(taxonomy.get("egress_sinks", set())) | (egress_sinks or set())
     enforcer = _build_enforcer(
         operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
-        untrusted_sources=untrusted_sources or set(),
-        sensitive_sources=sensitive_sources or set(),
-        egress_sinks=egress_sinks or set(),
+        **taxonomy,
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -176,6 +200,15 @@ def main() -> None:
         "--policy", default=_DEFAULT_POLICY,
         help=f"Operator policy ceiling (default: {_DEFAULT_POLICY}). "
              f"Valid: {sorted(_POLICY_NAMES)}",
+    )
+    start_p.add_argument(
+        "--config", default=os.environ.get("AXOR_DAEMON_CONFIG"),
+        metavar="PATH",
+        help=(
+            "Path to a governance.yaml. Supplies the full data-flow taxonomy — "
+            "including value_policies and driving_args that the flags below cannot "
+            "express. The flags merge on top. Also via AXOR_DAEMON_CONFIG."
+        ),
     )
     start_p.add_argument(
         "--log-level", default="INFO",
@@ -225,6 +258,7 @@ def main() -> None:
 
     asyncio.run(_run(
         args.socket, args.policy, args.handlers, args.sandbox_root,
+        config_path=args.config,
         untrusted_sources=set(args.untrusted_source),
         sensitive_sources=set(args.sensitive_source),
         egress_sinks=set(args.egress_sink),

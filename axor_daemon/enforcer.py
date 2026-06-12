@@ -53,6 +53,7 @@ class DaemonEnforcer:
         positional_sinks: "set[str] | frozenset[str] | None" = None,
         value_policies: dict | None = None,
         consequence_overrides: dict | None = None,
+        driving_args: "dict[str, list[str]] | None" = None,
     ) -> None:
         self._operator_policy = operator_policy
         self._handlers = handlers
@@ -76,6 +77,7 @@ class DaemonEnforcer:
             positional_sinks=set(positional_sinks or ()),
             value_policies=dict(value_policies or {}),
             consequence_overrides=dict(consequence_overrides or {}),
+            driving_args=dict(driving_args or {}),
             max_unattended_consequence=getattr(
                 operator_policy, "max_unattended_consequence",
                 ConsequenceClass.CONSEQUENTIAL,

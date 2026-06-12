@@ -116,3 +116,33 @@ async def test_without_governor_daemon_only_does_capability():
     )
     assert d == "approved"  # no data-flow gate without a governor
     assert send.sent == [ATTACKER]
+
+
+@pytest.mark.asyncio
+async def test_daemon_driving_args_allows_untrusted_body_to_trusted_recipient():
+    send = _SendEmail()
+    enf = _enforcer(
+        send, untrusted_sources={"search_docs"}, egress_sinks={"send_email"},
+        driving_args={"send_email": ["to"]},
+    )
+    gov = enf.new_session_governor()
+    await enf.execute("1", "search_docs", {"query": "policy"}, _ALLOWED, governor=gov)
+    # body carries the untrusted doc content, recipient is trusted → allowed
+    d, _, _ = await enf.execute(
+        "2", "send_email", {"to": LEGIT, "subject": "s", "body": ATTACKER}, _ALLOWED, governor=gov
+    )
+    assert d == "approved"
+    assert send.sent == [LEGIT]
+
+
+def test_taxonomy_from_config_includes_driving_args(tmp_path):
+    from axor_daemon.__main__ import _taxonomy_from_config
+    p = tmp_path / "gov.yaml"
+    p.write_text(
+        "egress_sinks: [send_email]\n"
+        "untrusted_sources: [search_docs]\n"
+        "driving_args: {send_email: [to]}\n"
+    )
+    tax = _taxonomy_from_config(str(p))
+    assert tax["driving_args"] == {"send_email": ["to"]}
+    assert tax["egress_sinks"] == {"send_email"}
