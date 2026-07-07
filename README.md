@@ -3,7 +3,7 @@
 [![CI](https://github.com/Bucha11/axor-daemon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bucha11/axor-daemon/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/axor-daemon?cacheSeconds=300)](https://pypi.org/project/axor-daemon/)
 [![Python](https://img.shields.io/pypi/pyversions/axor-daemon?cacheSeconds=300)](https://pypi.org/project/axor-daemon/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Process-isolated capability executor for [axor-core](https://github.com/Bucha11/axor-core).**
 
@@ -247,4 +247,4 @@ For stronger guarantees, combine axor-daemon with OS-level sandboxing (seccomp, 
 
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE).
