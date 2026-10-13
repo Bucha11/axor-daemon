@@ -70,6 +70,8 @@ class DaemonEnforcer:
         exec_timeout: float = _DEFAULT_EXEC_TIMEOUT,
         sandbox_root: str | None = None,
         governance: Any = None,
+        confirm: Any = None,
+        operator_allowed: frozenset[str] | None = None,
     ) -> None:
         self._operator_policy = operator_policy
         self._handlers = handlers
@@ -80,9 +82,15 @@ class DaemonEnforcer:
         )
         resolver = CapabilityResolver()
         caps = resolver.resolve(operator_policy)
-        self._operator_allowed: frozenset[str] = caps.allowed_tools
+        # The ceiling is the policy's tool classes unless the operator names the
+        # tools explicitly (e.g. every registered handler).
+        self._operator_allowed: frozenset[str] = (
+            caps.allowed_tools if operator_allowed is None else frozenset(operator_allowed))
         # Operator GovernanceConfig, fixed at startup like operator_policy.
         self._governance = governance
+        # L4: the operator's confirmation endpoint (axor_daemon.confirm.ConfirmChannel).
+        # Without it no call is ever confirmed (the grant gate stays a denial).
+        self._confirm = confirm
 
     def open_session(self, task: str | None = None) -> DaemonSession:
         """State for one connection. ``task`` is the user's request as the client
@@ -94,7 +102,10 @@ class DaemonEnforcer:
             return DaemonSession()
         from axor_core.governor import ToolCallGovernor
 
-        g = ToolCallGovernor(**self._governance.as_governor_kwargs())
+        kw = self._governance.as_governor_kwargs()
+        if self._confirm is not None:
+            kw["confirmer"] = self._confirm.confirmer(task)
+        g = ToolCallGovernor(**kw)
         if task:
             g.register_task(task)
             if self._governance.grant_args:
@@ -155,7 +166,12 @@ class DaemonEnforcer:
         gov = session.governor if session is not None else None
         decision = spend = None
         if gov is not None:
-            decision = gov.evaluate(tool, safe_args)
+            if self._confirm is not None:
+                # the confirmer waits on the event loop for the operator: run the
+                # (synchronous) evaluate off-loop; the session lock is still held
+                decision = await asyncio.to_thread(gov.evaluate, tool, safe_args)
+            else:
+                decision = gov.evaluate(tool, safe_args)
             if not decision.allowed:
                 reason = f"governance ({decision.category}): {decision.reason}"
                 _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)

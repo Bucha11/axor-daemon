@@ -105,7 +105,8 @@ def _load_handlers(specs: list[str]) -> dict:
 
 
 def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None,
-                    governance_path: str | None = None):
+                    governance_path: str | None = None, confirm=None,
+                    operator_tools: str = "policy"):
     from axor_daemon.enforcer import DaemonEnforcer
     governance = None
     if governance_path:
@@ -116,6 +117,8 @@ def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = 
         handlers=handlers,
         sandbox_root=sandbox_root,
         governance=governance,
+        confirm=confirm,
+        operator_allowed=frozenset(handlers) if operator_tools == "handlers" else None,
     )
 
 
@@ -125,16 +128,25 @@ async def _run(
     handler_specs: list[str],
     sandbox_root: str | None = None,
     governance_path: str | None = None,
+    confirm_socket: str | None = None,
+    operator_tools: str = "policy",
 ) -> None:
     from axor_daemon.server import DaemonServer
 
     operator_policy = _build_operator_policy(policy_name)
     handlers = _load_handlers(handler_specs)
+    confirm = None
+    if confirm_socket:
+        from axor_daemon.confirm import ConfirmChannel
+        confirm = ConfirmChannel()
+        await confirm.start(os.path.expanduser(confirm_socket))
     enforcer = _build_enforcer(
         operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
         governance_path=governance_path,
+        confirm=confirm,
+        operator_tools=operator_tools,
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -156,6 +168,8 @@ async def _run(
 
     await stop_event.wait()
     await server.stop()
+    if confirm is not None:
+        await confirm.stop()
     logging.info("AxorDaemon stopped")
 
 
@@ -208,6 +222,24 @@ def main() -> None:
         ),
     )
 
+    start_p.add_argument(
+        "--confirm-socket",
+        default=os.environ.get("AXOR_DAEMON_CONFIRM_SOCKET"),
+        metavar="PATH",
+        help=(
+            "Operator confirmation endpoint (L4), a Unix socket separate from the "
+            "agent's. Without it nothing is ever confirmed. Also "
+            "AXOR_DAEMON_CONFIRM_SOCKET."
+        ),
+    )
+    start_p.add_argument(
+        "--operator-tools", choices=["policy", "handlers"], default="policy",
+        help=(
+            "Operator ceiling: the policy's tool classes (default) or exactly the "
+            "registered handlers' names."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -220,7 +252,7 @@ def main() -> None:
     )
 
     asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root,
-                     args.governance))
+                     args.governance, args.confirm_socket, args.operator_tools))
 
 
 if __name__ == "__main__":

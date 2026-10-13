@@ -11,7 +11,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 keywords = ["agents", "governance", "llm", "ai", "security"]
 dependencies = [
-    "axor-core>=0.11,<0.12",
+    "axor-core[config]>=0.11,<0.12",  # --governance reads YAML
 ]
 
 [project.optional-dependencies]
