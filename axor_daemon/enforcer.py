@@ -5,7 +5,16 @@ Two-ceiling enforcement:
   1. client_allowed_tools  — derived by GovernedSession from session policy
   2. operator_allowed_tools — derived from operator_policy set at daemon startup
 
-Tool executes only when approved by both. Operator ceiling cannot be escalated
+Tool executes only when approved by both.
+
+Governance (optional, ``governance=GovernanceConfig``): the daemon also runs the
+kernel's per-call gates itself — consequence, value policy, SSRF, positional,
+carrier, per-value taint, the confidentiality floor and task-scoped grants — on a
+``ToolCallGovernor`` it owns, one per connection. Every tool output passes through
+the daemon, so it registers outputs into that governor's ledger itself: the agent
+process can neither skip a gate nor launder a read. A grant use is reserved before
+the handler runs and committed after it returns; a handler that times out leaves
+the use spent (never re-run). Operator ceiling cannot be escalated
 by the client — it is set once at daemon start and never modified per-connection.
 
 Args are never trusted raw from the client:
@@ -23,6 +32,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dataclasses import dataclass
+
 from axor_core.capability.executor import ToolHandler
 from axor_core.capability.resolver import CapabilityResolver
 from axor_core.contracts.policy import ExecutionPolicy
@@ -37,6 +48,13 @@ _PATH_ARG_KEYS = frozenset({"path", "file", "filepath", "filename", "target"})
 _DEFAULT_EXEC_TIMEOUT = 60.0
 
 
+@dataclass
+class DaemonSession:
+    """Per-connection daemon state: the governor whose ledger the daemon feeds."""
+
+    governor: Any = None
+
+
 class DaemonEnforcer:
     def __init__(
         self,
@@ -44,6 +62,7 @@ class DaemonEnforcer:
         handlers: dict[str, ToolHandler],
         exec_timeout: float = _DEFAULT_EXEC_TIMEOUT,
         sandbox_root: str | None = None,
+        governance: Any = None,
     ) -> None:
         self._operator_policy = operator_policy
         self._handlers = handlers
@@ -55,6 +74,25 @@ class DaemonEnforcer:
         resolver = CapabilityResolver()
         caps = resolver.resolve(operator_policy)
         self._operator_allowed: frozenset[str] = caps.allowed_tools
+        # Operator GovernanceConfig, fixed at startup like operator_policy.
+        self._governance = governance
+
+    def open_session(self, task: str | None = None) -> DaemonSession:
+        """State for one connection. ``task`` is the user's request as the client
+        reports it; it seeds the trusted-origin index (context integrity) and the
+        L1 request grants. It is client-asserted: a compromised agent process can
+        lie about it, which widens L1 to whatever it claims — the operator ceiling,
+        templates and the floor are unaffected."""
+        if self._governance is None:
+            return DaemonSession()
+        from axor_core.governor import ToolCallGovernor
+
+        g = ToolCallGovernor(**self._governance.as_governor_kwargs())
+        if task:
+            g.register_task(task)
+            if self._governance.grant_args:
+                g.grants.from_request(task)
+        return DaemonSession(governor=g)
 
     async def execute(
         self,
@@ -62,6 +100,7 @@ class DaemonEnforcer:
         tool: str,
         args: dict[str, Any],
         client_allowed_tools: frozenset[str],
+        session: DaemonSession | None = None,
     ) -> tuple[str, Any, str | None]:
         """
         Validate and execute a tool call.
@@ -96,6 +135,19 @@ class DaemonEnforcer:
             _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
             return "denied", None, reason
 
+        gov = session.governor if session is not None else None
+        decision = spend = None
+        if gov is not None:
+            decision = gov.evaluate(tool, safe_args)
+            if not decision.allowed:
+                reason = f"governance ({decision.category}): {decision.reason}"
+                _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
+                return "denied", None, reason
+            spend = gov.spend(decision, safe_args, call_key=call_id or None)
+            if decision.grant_id is not None and spend is None:
+                reason = "governance (grant_gate): the grant was used up concurrently"
+                return "denied", None, reason
+
         try:
             result = await asyncio.wait_for(
                 handler.execute(safe_args), timeout=self._exec_timeout
@@ -103,7 +155,12 @@ class DaemonEnforcer:
         except asyncio.TimeoutError:
             reason = f"handler '{tool}' exceeded exec_timeout ({self._exec_timeout}s)"
             _log.error("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
-            return "denied", None, reason
+            return "denied", None, reason  # a reserved grant use stays spent
+
+        if gov is not None:
+            if spend is not None:
+                gov.grant_store.commit(spend)
+            gov.register_output(decision, result if isinstance(result, str) else repr(result))
 
         _log.debug("APPROVED call_id=%s tool=%s", call_id, tool)
         return "approved", result, None

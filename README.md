@@ -48,6 +48,10 @@ Every tool call passes independent checks in the daemon:
 
 **6. Exec timeout** — every handler execution is bounded by `exec_timeout` (default: 60s). A handler that exceeds the timeout returns `DENIED` — it does not hang the daemon session.
 
+**7. Governance (optional, `--governance config.yaml`)** — the daemon runs axor-core's per-call gates itself on a `ToolCallGovernor` it owns, one per connection: consequence class, value policies, SSRF, positional, carrier, per-value taint, the confidentiality floor and task-scoped grants. Every tool output passes through the daemon, so it registers outputs into that ledger itself — the agent process can neither skip a gate nor launder a read. Grant uses are reserved before the handler runs and committed after it returns; a timed-out handler leaves the use spent. The user's request arrives in the handshake (`hello.task`) and is client-asserted: a compromised agent process can lie about it, which widens request-literal (L1) grants to what it claims; the operator ceiling, templates and the floor are unaffected.
+
+Without `--governance` the daemon enforces checks 1–6 only: it re-derives the **tool-name** ceiling, not the data-flow verdict, which is then decided in the agent process.
+
 ```
 Client sends: tool="bash", allowed_tools=["bash", "read"]
 
@@ -73,7 +77,7 @@ A client that sends an inflated `allowed_tools` list or crafted path args cannot
 pip install axor-daemon
 ```
 
-Requires `axor-core >= 0.5.0, < 0.6`. Zero additional dependencies — stdlib `asyncio` only.
+Requires `axor-core >= 0.11, < 0.12`. Zero additional dependencies — stdlib `asyncio` only.
 
 ---
 

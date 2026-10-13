@@ -141,6 +141,8 @@ class DaemonServer:
             await writer.drain()
             return
 
+        session = self._enforcer.open_session(task=hello.get("task"))
+
         writer.write(encode_message({"type": "ready"}))
         await writer.drain()
 
@@ -166,6 +168,7 @@ class DaemonServer:
                 tool=tool,
                 args=args,
                 client_allowed_tools=client_allowed,
+                session=session,
             )
 
             response = {

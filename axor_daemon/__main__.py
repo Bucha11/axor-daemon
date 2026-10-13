@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import importlib
 import logging
+import os
 import signal
 import sys
 
@@ -103,12 +104,18 @@ def _load_handlers(specs: list[str]) -> dict:
     return handlers
 
 
-def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None):
+def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None,
+                    governance_path: str | None = None):
     from axor_daemon.enforcer import DaemonEnforcer
+    governance = None
+    if governance_path:
+        from axor_core.config import GovernanceConfig
+        governance = GovernanceConfig.from_yaml(governance_path)
     return DaemonEnforcer(
         operator_policy=operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
+        governance=governance,
     )
 
 
@@ -117,6 +124,7 @@ async def _run(
     policy_name: str,
     handler_specs: list[str],
     sandbox_root: str | None = None,
+    governance_path: str | None = None,
 ) -> None:
     from axor_daemon.server import DaemonServer
 
@@ -126,6 +134,7 @@ async def _run(
         operator_policy,
         handlers=handlers,
         sandbox_root=sandbox_root,
+        governance_path=governance_path,
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -140,8 +149,9 @@ async def _run(
         loop.add_signal_handler(sig, _handle_signal)
 
     logging.info(
-        "AxorDaemon started — policy=%s socket=%s handlers=%s sandbox_root=%s",
+        "AxorDaemon started — policy=%s socket=%s handlers=%s sandbox_root=%s governance=%s",
         policy_name, socket_path, sorted(handlers), sandbox_root or "<none>",
+        governance_path or "<none>",
     )
 
     await stop_event.wait()
@@ -187,6 +197,17 @@ def main() -> None:
         ),
     )
 
+    start_p.add_argument(
+        "--governance",
+        default=os.environ.get("AXOR_DAEMON_GOVERNANCE"),
+        metavar="CONFIG.yaml",
+        help=(
+            "Operator GovernanceConfig (axor-core YAML). When set, the daemon runs "
+            "the kernel gates and task-scoped grants itself, per connection. Also "
+            "configurable via AXOR_DAEMON_GOVERNANCE."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -198,7 +219,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root))
+    asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root,
+                     args.governance))
 
 
 if __name__ == "__main__":
