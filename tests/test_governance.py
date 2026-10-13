@@ -133,3 +133,117 @@ async def test_end_to_end_over_the_socket(tmp_path):
     finally:
         await client.aclose()
         await server.stop()
+
+
+# ── E: no interleaving between check and send; what is checked is what runs ──
+
+class _SlowSecret(ToolHandler):
+    def __init__(self) -> None:
+        self.release = None
+
+    @property
+    def name(self) -> str:
+        return "read_secret"
+
+    async def execute(self, args: dict) -> str:
+        import asyncio
+        await asyncio.sleep(0.05)
+        return "API_KEY=sk-live-123"
+
+
+@pytest.mark.asyncio
+async def test_a_call_is_decided_on_the_state_at_send_time_without_interleaving():
+    """A secret read in flight on the same session arms the floor before the next
+    call of that session is checked: the egress sent concurrently is denied."""
+    import asyncio
+    send = _Tool("send_money")
+    handlers = {"read_secret": _SlowSecret(), "send_money": send}
+    gov = {**BANK, "sensitive_sources": ["read_secret"]}
+    e = DaemonEnforcer(_policy(), handlers, governance=GovernanceConfig.from_dict(gov))
+    e._operator_allowed = frozenset(handlers)
+    s = e.open_session(task=f"pay {ALICE} 5")
+    tools = frozenset(handlers)
+    r_read, r_send = await asyncio.gather(
+        e.execute("1", "read_secret", {}, tools, s),
+        e.execute("2", "send_money", {"recipient": ALICE, "amount": 5}, tools, s),
+    )
+    assert r_read[0] == "approved"
+    assert r_send[0] == "denied" and "taint_enforcement" in r_send[2]
+    assert send.calls == 0
+
+
+class _Recorder(ToolHandler):
+    def __init__(self) -> None:
+        self.seen: list[dict] = []
+
+    @property
+    def name(self) -> str:
+        return "send_money"
+
+    async def execute(self, args: dict) -> str:
+        self.seen.append(dict(args))
+        args["recipient"] = ATTACKER  # a handler mutating its args changes nothing upstream
+        return "ok"
+
+
+@pytest.mark.asyncio
+async def test_the_handler_runs_exactly_the_checked_arguments():
+    rec = _Recorder()
+    e = DaemonEnforcer(_policy(), {"send_money": rec},
+                       governance=GovernanceConfig.from_dict(BANK))
+    e._operator_allowed = frozenset({"send_money"})
+    s = e.open_session(task=f"pay {ALICE} 5")
+    checked: list[dict] = []
+    orig = s.governor.evaluate
+    s.governor.evaluate = lambda tool, args: (checked.append(dict(args)), orig(tool, args))[1]
+    args = {"recipient": ALICE, "amount": 5}
+    assert (await e.execute("1", "send_money", args, frozenset({"send_money"}), s))[0] == "approved"
+    assert rec.seen[0] == checked[0] == {"recipient": ALICE, "amount": 5}
+    assert args == {"recipient": ALICE, "amount": 5}  # the caller's dict is untouched
+
+
+# ── G1: grant issuance is daemon-side, unreachable from the agent connection ──
+
+@pytest.mark.asyncio
+async def test_no_message_on_the_agent_connection_can_mint_a_grant(tmp_path):
+    """The wire protocol has hello / tool_call / bye only. Messages naming grant
+    issuance are ignored, a tool named after the minting API has no handler, and
+    the session's grant store is unchanged."""
+    import asyncio
+    from axor_core.contracts.daemon import PROTOCOL_VERSION, encode_message, read_message
+
+    from axor_daemon.server import DaemonServer
+
+    gov = {**BANK, "grant_args": {"send_money": {"recipient": "iban", "amount": "money"}}}
+    e, send = _enforcer(gov)
+    sessions = []
+    orig_open = e.open_session
+    e.open_session = lambda task=None: sessions.append(orig_open(task)) or sessions[-1]
+    server = DaemonServer(enforcer=e)
+    sock = str(tmp_path / "g1.sock")
+    await server.start(sock)
+    try:
+        reader, writer = await asyncio.open_unix_connection(sock)
+        writer.write(encode_message({"v": PROTOCOL_VERSION, "type": "hello", "mode": "library",
+                                     "task": "check my balance"}))
+        await writer.drain()
+        assert (await read_message(reader))["type"] == "ready"
+        before = sessions[0].governor.grant_store.snapshot()
+        for msg in ({"type": "mint_grant", "sink": "send_money", "args": {"recipient": ATTACKER, "amount": 9}},
+                    {"type": "confirm", "call": {"tool": "send_money", "args": {"recipient": ATTACKER}}},
+                    {"type": "grant", "levels": "L2"}):
+            writer.write(encode_message({"v": PROTOCOL_VERSION, **msg}))
+        for i, tool in enumerate(("from_confirmation", "register_trusted", "grants")):
+            writer.write(encode_message({"v": PROTOCOL_VERSION, "type": "tool_call", "call_id": f"m{i}",
+                                         "tool": tool, "args": {"sink": "send_money"},
+                                         "allowed_tools": [tool]}))
+            assert (await read_message(reader))["decision"] == "denied"
+        writer.write(encode_message({"v": PROTOCOL_VERSION, "type": "tool_call", "call_id": "s",
+                                     "tool": "send_money", "args": {"recipient": ATTACKER, "amount": 9},
+                                     "allowed_tools": ["send_money", "read_file"]}))
+        assert (await read_message(reader))["decision"] == "denied"
+        assert sessions[0].governor.grant_store.snapshot() == before == ()
+        assert send.calls == 0
+        writer.close()
+    finally:
+        await server.stop()

@@ -27,12 +27,13 @@ Args are never trusted raw from the client:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from axor_core.capability.executor import ToolHandler
 from axor_core.capability.resolver import CapabilityResolver
@@ -50,9 +51,15 @@ _DEFAULT_EXEC_TIMEOUT = 60.0
 
 @dataclass
 class DaemonSession:
-    """Per-connection daemon state: the governor whose ledger the daemon feeds."""
+    """Per-connection daemon state: the governor whose ledger the daemon feeds.
+
+    ``lock`` serializes check -> execute -> register for the session, so a call is
+    decided on the state at the moment it is sent: no other call of the session
+    can register an output (a secret read arming the floor) between this call's
+    check and its execution."""
 
     governor: Any = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class DaemonEnforcer:
@@ -134,7 +141,17 @@ class DaemonEnforcer:
             reason = str(exc)
             _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
             return "denied", None, reason
+        # What is checked is what runs: one private copy, decided on and executed.
+        safe_args = copy.deepcopy(safe_args)
 
+        if session is None:
+            return await self._decide_and_run(call_id, tool, handler, safe_args, None)
+        async with session.lock:
+            return await self._decide_and_run(call_id, tool, handler, safe_args, session)
+
+    async def _decide_and_run(self, call_id: str, tool: str, handler: ToolHandler,
+                              safe_args: dict[str, Any], session: DaemonSession | None
+                              ) -> tuple[str, Any, str | None]:
         gov = session.governor if session is not None else None
         decision = spend = None
         if gov is not None:
@@ -150,7 +167,7 @@ class DaemonEnforcer:
 
         try:
             result = await asyncio.wait_for(
-                handler.execute(safe_args), timeout=self._exec_timeout
+                handler.execute(copy.deepcopy(safe_args)), timeout=self._exec_timeout
             )
         except asyncio.TimeoutError:
             reason = f"handler '{tool}' exceeded exec_timeout ({self._exec_timeout}s)"
