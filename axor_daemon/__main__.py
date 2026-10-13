@@ -130,6 +130,8 @@ async def _run(
     governance_path: str | None = None,
     confirm_socket: str | None = None,
     operator_tools: str = "policy",
+    l4_budget: int | None = None,
+    l4_max_refusals: int | None = None,
 ) -> None:
     from axor_daemon.server import DaemonServer
 
@@ -138,7 +140,7 @@ async def _run(
     confirm = None
     if confirm_socket:
         from axor_daemon.confirm import ConfirmChannel
-        confirm = ConfirmChannel()
+        confirm = ConfirmChannel(budget=l4_budget, max_refusals=l4_max_refusals)
         await confirm.start(os.path.expanduser(confirm_socket))
     enforcer = _build_enforcer(
         operator_policy,
@@ -240,6 +242,11 @@ def main() -> None:
         ),
     )
 
+    start_p.add_argument("--l4-budget", type=int, default=None, metavar="N",
+                         help="At most N confirmation questions per session (default: no limit).")
+    start_p.add_argument("--l4-max-refusals", type=int, default=None, metavar="K",
+                         help="Terminate a session after K operator refusals (default: never).")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -252,7 +259,8 @@ def main() -> None:
     )
 
     asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root,
-                     args.governance, args.confirm_socket, args.operator_tools))
+                     args.governance, args.confirm_socket, args.operator_tools,
+                     args.l4_budget, args.l4_max_refusals))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 from typing import Any, Mapping
 
@@ -38,8 +39,15 @@ _DEFAULT_TIMEOUT = 30.0
 
 
 class ConfirmChannel:
-    def __init__(self, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    def __init__(self, timeout: float = _DEFAULT_TIMEOUT, budget: int | None = None,
+                 max_refusals: int | None = None) -> None:
         self._timeout = timeout
+        for name, v in (("budget", budget), ("max_refusals", max_refusals)):
+            if v is not None and (not isinstance(v, int) or v < 1):
+                raise ValueError(f"{name} must be a positive integer, got {v!r}")
+        # per-session limits (see ThreadConfirmer)
+        self.budget = budget
+        self.max_refusals = max_refusals
         self._writer: asyncio.StreamWriter | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._ids = itertools.count(1)
@@ -135,20 +143,57 @@ class ConfirmChannel:
         """A kernel confirmer for one session (``confirm(action, call) -> bool``)."""
         if self._loop is None:
             raise RuntimeError("ConfirmChannel.start() first")
-        return ThreadConfirmer(self, self._loop, task)
+        return ThreadConfirmer(self, self._loop, task, budget=self.budget,
+                               max_refusals=self.max_refusals)
 
 
 class ThreadConfirmer:
-    """Called by the kernel from a worker thread; blocks on the operator's answer."""
+    """Called by the kernel from a worker thread; blocks on the operator's answer.
 
-    def __init__(self, channel: ConfirmChannel, loop: asyncio.AbstractEventLoop, task: str | None) -> None:
+    One per session, with the session's confirmation limits:
+      budget        at most N questions to the operator; beyond it nothing is asked
+                    and the grant gate stays a denial;
+      dedup         a call identical to one the operator REFUSED (same sink and
+                    args) is refused again without asking. An approved call asked
+                    again is a new action (a second execution) and is asked again;
+      max_refusals  after K refusals the session is terminated: every later
+                    confirmation is refused and the daemon denies every later call
+                    and closes the connection.
+    """
+
+    def __init__(self, channel: ConfirmChannel, loop: asyncio.AbstractEventLoop, task: str | None,
+                 budget: int | None = None, max_refusals: int | None = None) -> None:
         self._channel, self._loop, self._task = channel, loop, task
+        self.budget, self.max_refusals = budget, max_refusals
+        self.asked = self.refusals = self.deduped = self.over_budget = 0
+        self._refused: set[str] = set()
+        self.terminated = False
+
+    @staticmethod
+    def _key(sink: str, args: Mapping[str, Any]) -> str:
+        return json.dumps([sink, args], sort_keys=True, default=str)
 
     def confirm(self, action: Any, call: tuple[str, Mapping[str, Any]]) -> bool:
         sink, args = call
+        if self.terminated:
+            return False
+        key = self._key(sink, args)
+        if key in self._refused:
+            self.deduped += 1
+            return False
+        if self.budget is not None and self.asked >= self.budget:
+            self.over_budget += 1
+            return False
+        self.asked += 1
         fut = asyncio.run_coroutine_threadsafe(
             self._channel.ask(self._task, sink, args, action.text()), self._loop)
         try:
-            return bool(fut.result(timeout=self._channel._timeout + 5))
+            ok = bool(fut.result(timeout=self._channel._timeout + 5))
         except Exception:
-            return False
+            ok = False
+        if not ok:
+            self.refusals += 1
+            self._refused.add(key)
+            if self.max_refusals is not None and self.refusals >= self.max_refusals:
+                self.terminated = True
+        return ok

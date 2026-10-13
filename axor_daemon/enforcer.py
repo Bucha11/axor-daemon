@@ -45,6 +45,8 @@ _log = logging.getLogger("axor.daemon.enforcer")
 # Handlers may have additional args — only these are path-normalized.
 _PATH_ARG_KEYS = frozenset({"path", "file", "filepath", "filename", "target"})
 
+_TERMINATED = "session terminated: the operator refused too many confirmations (--l4-max-refusals)"
+
 # Default max seconds any single handler.execute() may run.
 _DEFAULT_EXEC_TIMEOUT = 60.0
 
@@ -60,6 +62,11 @@ class DaemonSession:
 
     governor: Any = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    confirmer: Any = None  # the session's ThreadConfirmer (L4 limits), if any
+
+    @property
+    def terminated(self) -> bool:
+        return bool(self.confirmer is not None and self.confirmer.terminated)
 
 
 class DaemonEnforcer:
@@ -103,14 +110,15 @@ class DaemonEnforcer:
         from axor_core.governor import ToolCallGovernor
 
         kw = self._governance.as_governor_kwargs()
+        confirmer = None
         if self._confirm is not None:
-            kw["confirmer"] = self._confirm.confirmer(task)
+            confirmer = kw["confirmer"] = self._confirm.confirmer(task)
         g = ToolCallGovernor(**kw)
         if task:
             g.register_task(task)
             if self._governance.grant_args:
                 g.grants.from_request(task)
-        return DaemonSession(governor=g)
+        return DaemonSession(governor=g, confirmer=confirmer)
 
     async def execute(
         self,
@@ -165,6 +173,8 @@ class DaemonEnforcer:
                               ) -> tuple[str, Any, str | None]:
         gov = session.governor if session is not None else None
         decision = spend = None
+        if session is not None and session.terminated:
+            return "denied", None, _TERMINATED
         if gov is not None:
             if self._confirm is not None:
                 # the confirmer waits on the event loop for the operator: run the
@@ -173,6 +183,8 @@ class DaemonEnforcer:
             else:
                 decision = gov.evaluate(tool, safe_args)
             if not decision.allowed:
+                if session is not None and session.terminated:
+                    return "denied", None, _TERMINATED
                 reason = f"governance ({decision.category}): {decision.reason}"
                 _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
                 return "denied", None, reason

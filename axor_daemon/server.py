@@ -180,3 +180,5 @@ class DaemonServer:
             }
             writer.write(encode_message(response))
             await writer.drain()
+            if session.terminated:  # --l4-max-refusals reached: end the session
+                break
