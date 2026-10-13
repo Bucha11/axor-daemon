@@ -1,0 +1,4 @@
+host: x86_64 | CPython 3.13.16
+  names only (no governance)   p50=  133.5  p99=  250.2  µs  (socket -> check -> handler -> register -> reply)
+  kernel gates                 p50=  269.8  p99=  491.2  µs  (socket -> check -> handler -> register -> reply)
+  kernel gates + grant         p50=  303.4  p99=  837.2  µs  (socket -> check -> handler -> register -> reply)
