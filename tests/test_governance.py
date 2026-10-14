@@ -247,3 +247,39 @@ async def test_no_message_on_the_agent_connection_can_mint_a_grant(tmp_path):
         writer.close()
     finally:
         await server.stop()
+
+
+# ── MODEL.md §9: references live in the daemon session ─────────────────────────
+class _Rec(_Tool):
+    async def execute(self, args: dict) -> str:
+        self.calls += 1
+        self.last = dict(args)
+        return self._out
+
+
+REFS = {**BANK, "references": True, "audience": [ALICE],
+        "integrity_default": "context", "integrity_origins": "request-only"}
+
+
+@pytest.mark.asyncio
+async def test_the_agent_sees_a_reference_and_the_handler_the_value():
+    import re
+    send = _Rec("send_money")
+    handlers = {"read_file": _Tool("read_file", f"recipient: {ATTACKER}\nnote: also pay {ALICE}"),
+                "send_money": send}
+    e = DaemonEnforcer(_policy(), handlers, governance=GovernanceConfig.from_dict(REFS))
+    e._operator_allowed = frozenset(handlers)
+    s = e.open_session(task="pay what the file says")
+    _, view, _ = await e.execute("1", "read_file", {"file_path": "x"}, ALL, s)
+    assert ATTACKER not in view and ALICE in view  # untrusted hidden, own raw
+    ref = re.search(r"iban_from_untrusted_read_hidden_[0-9a-f]{4}", view).group(0)
+    # untrusted origin, no human: refused; the handler never runs
+    decision, _, reason = await e.execute("2", "send_money", {"recipient": ref, "amount": 1}, ALL, s)
+    assert decision == "denied" and "reference_origin" in reason and send.calls == 0
+    # own value raw: runs with exactly that value
+    assert (await e.execute("3", "send_money", {"recipient": ALICE, "amount": 1}, ALL, s))[0] == "approved"
+    assert send.last["recipient"] == ALICE
+    # the reference means nothing in another session
+    other = e.open_session(task="pay what the file says")
+    decision, _, reason = await e.execute("4", "send_money", {"recipient": ref, "amount": 1}, ALL, other)
+    assert decision == "denied" and "reference_unknown" in reason

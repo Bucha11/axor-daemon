@@ -188,6 +188,10 @@ class DaemonEnforcer:
                 reason = f"governance ({decision.category}): {decision.reason}"
                 _log.info("DENIED call_id=%s tool=%s: %s", call_id, tool, reason)
                 return "denied", None, reason
+            # MODEL.md §9: with references on, the tool runs on the resolved values; the
+            # reference table never leaves this session
+            if getattr(decision, "resolved_args", None) is not None:
+                safe_args = copy.deepcopy(decision.resolved_args)
             spend = gov.spend(decision, safe_args, call_key=call_id or None)
             if decision.grant_id is not None and spend is None:
                 reason = "governance (grant_gate): the grant was used up concurrently"
@@ -205,7 +209,11 @@ class DaemonEnforcer:
         if gov is not None:
             if spend is not None:
                 gov.grant_store.commit(spend)
-            gov.register_output(decision, result if isinstance(result, str) else repr(result))
+            out = result if isinstance(result, str) else repr(result)
+            if getattr(gov, "_xrefs", None) is not None:
+                result = gov.present_output(decision, out)  # the agent sees references
+            else:
+                gov.register_output(decision, out)
 
         _log.debug("APPROVED call_id=%s tool=%s", call_id, tool)
         return "approved", result, None
