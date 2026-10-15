@@ -50,6 +50,8 @@ Every tool call passes independent checks in the daemon:
 
 **7. Governance (optional, `--governance config.yaml`)** — the daemon runs axor-core's per-call gates itself on a `ToolCallGovernor` it owns, one per connection: consequence class, value policies, SSRF, positional, carrier, per-value taint, the confidentiality floor and task-scoped grants. Every tool output passes through the daemon, so it registers outputs into that ledger itself — the agent process can neither skip a gate nor launder a read. Grant uses are reserved before the handler runs and committed after it returns; a timed-out handler leaves the use spent. The user's request arrives in the handshake (`hello.task`) and is client-asserted: a compromised agent process can lie about it, which widens request-literal (L1) grants to what it claims; the operator ceiling, templates and the floor are unaffected.
 
+Description grants (axor-core MODEL.md 9.15) need the platform's parser of a description source's output: `--structured module.path:function`, `function(tool, result) -> structure | None` — the same parser an in-process integration takes as `structured=`. Without it no description grant is computed. Path-like arguments are normalized before the check; an empty value is left as it is.
+
 Without `--governance` the daemon enforces checks 1–6 only: it re-derives the **tool-name** ceiling, not the data-flow verdict, which is then decided in the agent process.
 
 ```

@@ -106,7 +106,7 @@ def _load_handlers(specs: list[str]) -> dict:
 
 def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None,
                     governance_path: str | None = None, confirm=None,
-                    operator_tools: str = "policy"):
+                    operator_tools: str = "policy", structured_spec: str | None = None):
     from axor_daemon.enforcer import DaemonEnforcer
     governance = None
     if governance_path:
@@ -119,7 +119,20 @@ def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = 
         governance=governance,
         confirm=confirm,
         operator_allowed=frozenset(handlers) if operator_tools == "handlers" else None,
+        structured=_load_callable(structured_spec) if structured_spec else None,
     )
+
+
+def _load_callable(spec: str):
+    """'module.path:function' -> the function (the --structured parser)."""
+    import importlib
+    module, sep, name = spec.partition(":")
+    if not sep or not module or not name:
+        raise SystemExit(f"Invalid --structured spec '{spec}'. Expected 'module.path:function'.")
+    fn = getattr(importlib.import_module(module), name)
+    if not callable(fn):
+        raise SystemExit(f"--structured {spec} is not callable")
+    return fn
 
 
 async def _run(
@@ -132,6 +145,7 @@ async def _run(
     operator_tools: str = "policy",
     l4_budget: int | None = None,
     l4_max_refusals: int | None = None,
+    structured_spec: str | None = None,
 ) -> None:
     from axor_daemon.server import DaemonServer
 
@@ -149,6 +163,7 @@ async def _run(
         governance_path=governance_path,
         confirm=confirm,
         operator_tools=operator_tools,
+        structured_spec=structured_spec,
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -242,6 +257,14 @@ def main() -> None:
         ),
     )
 
+    start_p.add_argument(
+        "--structured", default=os.environ.get("AXOR_DAEMON_STRUCTURED"), metavar="module:function",
+        help=(
+            "The platform's parser of a description source's output (axor-core MODEL.md "
+            "9.15): function(tool, result) -> structure or None. Without it no description "
+            "grant is computed. Also AXOR_DAEMON_STRUCTURED."
+        ),
+    )
     start_p.add_argument("--l4-budget", type=int, default=None, metavar="N",
                          help="At most N confirmation questions per session (default: no limit).")
     start_p.add_argument("--l4-max-refusals", type=int, default=None, metavar="K",
@@ -260,7 +283,7 @@ def main() -> None:
 
     asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root,
                      args.governance, args.confirm_socket, args.operator_tools,
-                     args.l4_budget, args.l4_max_refusals))
+                     args.l4_budget, args.l4_max_refusals, args.structured))
 
 
 if __name__ == "__main__":

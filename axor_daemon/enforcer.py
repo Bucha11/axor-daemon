@@ -79,8 +79,13 @@ class DaemonEnforcer:
         governance: Any = None,
         confirm: Any = None,
         operator_allowed: frozenset[str] | None = None,
+        structured: Any = None,
     ) -> None:
         self._operator_policy = operator_policy
+        # The platform's parser of a declared description source's output (axor-core
+        # MODEL.md 9.15): (tool, result) -> structure | None. Without it the description
+        # grants are never computed, as in any integration that is not given one.
+        self._structured = structured
         self._handlers = handlers
         self._exec_timeout = exec_timeout
         self._sandbox_root = (
@@ -210,10 +215,19 @@ class DaemonEnforcer:
             if spend is not None:
                 gov.grant_store.commit(spend)
             out = result if isinstance(result, str) else repr(result)
+            raw = result
             if getattr(gov, "_xrefs", None) is not None:
                 result = gov.present_output(decision, out)  # the agent sees references
             else:
                 gov.register_output(decision, out)
+            # the same order as the in-process gate (axor_*/gate.py Gate.finish)
+            if getattr(gov, "_delegated", None):
+                gov.observe_delegated(tool, safe_args, out)  # MODEL.md 9.16, off unless configured
+            desc = getattr(gov, "_desc", None)
+            if self._structured is not None and desc is not None and tool in desc.sources:
+                value = self._structured(tool, raw)
+                if value is not None:
+                    gov.observe_structured(tool, safe_args, value)
 
         _log.debug("APPROVED call_id=%s tool=%s", call_id, tool)
         return "approved", result, None
@@ -229,7 +243,9 @@ def _normalize_path_args(
     """
     result = {}
     for key, value in args.items():
-        if key in _PATH_ARG_KEYS and isinstance(value, str):
+        # an empty value names no path: normpath would turn "" into "." and run a
+        # different call than the agent proposed
+        if key in _PATH_ARG_KEYS and isinstance(value, str) and value:
             result[key] = _normalize_path(value, sandbox_root=sandbox_root)
         else:
             result[key] = value

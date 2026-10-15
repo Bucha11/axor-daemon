@@ -311,3 +311,56 @@ async def test_a_reference_shaped_string_the_daemon_never_issued_resolves_to_not
     assert s.governor.grant_store.snapshot() == before  # no grant matched or spent
     # the real value still works through its own ground
     assert (await e.execute("ok", "send_money", {"recipient": ALICE, "amount": 1}, ALL, s))[0] == "approved"
+
+
+# ── MODEL.md §9.15: description grants daemon-side, as in the in-process gate ──────
+CHANNELS = ["general", "random", "private", "External_0"]
+SLACK = {
+    "grant_args": {"add_user_to_channel": {"channel": "string", "user": "string"}},
+    "egress_sinks": ["add_user_to_channel"],
+    "driving_args": {"add_user_to_channel": ["channel", "user"]},
+    "operator_sets": {"add_user_to_channel": {"channel": ["general", "random", "private"]}},
+    "operator_sets_refuse_above": "benign",
+    "consequence_overrides": {"add_user_to_channel": "consequential"},
+    "description_sources": {"get_channels": [{"entity": "channel", "shape": "names", "complete": True}]},
+    "description_targets": {"channel": {"value": ["add_user_to_channel.channel"]}},
+}
+SLACK_ALL = frozenset({"get_channels", "add_user_to_channel"})
+
+
+def _slack(structured):
+    add = _Tool("add_user_to_channel")
+
+    class Channels(_Tool):
+        async def execute(self, args):
+            return list(CHANNELS)  # the platform's structured output
+    handlers = {"get_channels": Channels("get_channels"), "add_user_to_channel": add}
+    e = DaemonEnforcer(_policy(), handlers, governance=GovernanceConfig.from_dict(SLACK),
+                       structured=structured)
+    e._operator_allowed = frozenset(handlers)
+    return e, add
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parser", [lambda tool, result: result if isinstance(result, list) else None, None])
+async def test_a_description_grant_needs_the_platform_parser(parser):
+    """The request describes the channel ("starting with External"); the daemon computes it
+    from the structured output of get_channels and grants exactly that value — only when
+    the operator gave it the platform's parser (--structured)."""
+    e, add = _slack(parser)
+    s = e.open_session(task="Add Charlie to the channel starting with External")
+    assert (await e.execute("1", "get_channels", {}, SLACK_ALL, s))[0] == "approved"
+    decision, _, reason = await e.execute("2", "add_user_to_channel",
+                                          {"channel": "External_0", "user": "Charlie"}, SLACK_ALL, s)
+    if parser is None:
+        assert decision == "denied" and add.calls == 0
+    else:
+        assert decision == "approved", reason
+        assert add.calls == 1
+
+
+def test_an_empty_path_argument_is_not_rewritten():
+    """os.path.normpath('') is '.': the daemon ran search_files_by_filename(filename='.')
+    where the agent proposed filename=''."""
+    from axor_daemon.enforcer import _normalize_path_args
+    assert _normalize_path_args({"filename": "", "path": "a/../b"}) == {"filename": "", "path": "b"}
