@@ -283,3 +283,31 @@ async def test_the_agent_sees_a_reference_and_the_handler_the_value():
     other = e.open_session(task="pay what the file says")
     decision, _, reason = await e.execute("4", "send_money", {"recipient": ref, "amount": 1}, ALL, other)
     assert decision == "denied" and "reference_unknown" in reason
+
+
+@pytest.mark.asyncio
+async def test_a_reference_shaped_string_the_daemon_never_issued_resolves_to_nothing():
+    """A string shaped like a reference but never issued by this daemon session is not resolved to
+    any value: it stays the literal string, matches no grant (even one live for a real value of the
+    same kind), and the call is refused before the handler runs."""
+    send = _Rec("send_money")
+    handlers = {"read_file": _Tool("read_file", f"recipient: {ATTACKER}"), "send_money": send}
+    e = DaemonEnforcer(_policy(), handlers, governance=GovernanceConfig.from_dict(REFS))
+    e._operator_allowed = frozenset(handlers)
+    s = e.open_session(task=f"pay 1.00 to {ALICE}")  # an L1 grant on ALICE is live
+    await e.execute("1", "read_file", {"file_path": "x"}, ALL, s)  # issues one real reference
+    before = s.governor.grant_store.snapshot()
+    for forged in ("iban_from_untrusted_read_hidden_0000", "iban_from_untrusted_read_hidden_ffff",
+                   12345678):  # a name never issued; an integer in the handle range never issued
+        issued = forged in s.governor._xrefs.by_name
+        if issued:
+            continue  # (vanishingly unlikely collision with the one real reference)
+        decision, _, reason = await e.execute("f", "send_money", {"recipient": forged, "amount": 1}, ALL, s)
+        # a reference-shaped name is refused as unknown; an integer outside an id field is no handle at
+        # all — it stays a literal and no grant (the ALICE one included) covers it
+        assert decision == "denied"
+        assert ("reference_unknown" in reason) if isinstance(forged, str) else ("reference_unknown" not in reason)
+    assert send.calls == 0
+    assert s.governor.grant_store.snapshot() == before  # no grant matched or spent
+    # the real value still works through its own ground
+    assert (await e.execute("ok", "send_money", {"recipient": ALICE, "amount": 1}, ALL, s))[0] == "approved"
