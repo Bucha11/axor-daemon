@@ -353,7 +353,7 @@ async def test_a_description_grant_needs_the_platform_parser(parser):
     decision, _, reason = await e.execute("2", "add_user_to_channel",
                                           {"channel": "External_0", "user": "Charlie"}, SLACK_ALL, s)
     if parser is None:
-        assert decision == "denied" and add.calls == 0
+        assert decision == "denied" and "(operator_set)" in reason and add.calls == 0
     else:
         assert decision == "approved", reason
         assert add.calls == 1

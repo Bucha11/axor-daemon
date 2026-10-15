@@ -24,7 +24,11 @@ jobs:
           cache: pip
 
       - name: Install
+        # the kernel the daemon's gate is built for: axor-core claude/model-m1 (grants,
+        # references, description grants, 9.20); its version is still 0.11.0, so PyPI's
+        # 0.11.0 would satisfy the pin without any of them
         run: |
+          pip install "axor-core[config] @ git+https://github.com/Bucha11/axor-core@1d9549aceb31e95d0fecf3e18cbe42e29b8405e4"
           pip install -e ".[dev]"
 
       - name: Run tests
