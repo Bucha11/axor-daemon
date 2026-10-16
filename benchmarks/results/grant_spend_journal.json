@@ -1,0 +1,74 @@
+{
+ "host": {
+  "python": "3.12.3",
+  "machine": "x86_64"
+ },
+ "race": [
+  {
+   "trials": 100,
+   "concurrent_calls": 8,
+   "uses": 1,
+   "violations": 0
+  },
+  {
+   "trials": 100,
+   "concurrent_calls": 32,
+   "uses": 1,
+   "violations": 0
+  },
+  {
+   "trials": 100,
+   "concurrent_calls": 32,
+   "uses": 5,
+   "violations": 0
+  }
+ ],
+ "faults": [
+  {
+   "trials": 100,
+   "concurrent_calls": 16,
+   "uses": 3,
+   "fault_p": {
+    "refuse": 0.1,
+    "after": 0.1
+   },
+   "effects_over_uses": 0,
+   "spend_key_reused": 0,
+   "unknown_left_reserved_mismatch": 0,
+   "executed": 261,
+   "void": 31,
+   "unknown": 39,
+   "effects": 300
+  },
+  {
+   "trials": 100,
+   "concurrent_calls": 16,
+   "uses": 3,
+   "fault_p": {
+    "refuse": 0.1,
+    "after": 0.1,
+    "hang": 0.05
+   },
+   "effects_over_uses": 0,
+   "spend_key_reused": 0,
+   "unknown_left_reserved_mismatch": 0,
+   "executed": 244,
+   "void": 31,
+   "unknown": 56,
+   "effects": 300
+  }
+ ],
+ "latency": {
+  "n": 2000,
+  "no_journal": {
+   "p50_us": 83.9,
+   "p99_us": 145.7,
+   "mean_us": 93.1
+  },
+  "journal": {
+   "p50_us": 1014.2,
+   "p99_us": 2162.0,
+   "mean_us": 1047.5
+  }
+ }
+}

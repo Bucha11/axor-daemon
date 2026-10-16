@@ -106,12 +106,20 @@ def _load_handlers(specs: list[str]) -> dict:
 
 def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = None,
                     governance_path: str | None = None, confirm=None,
-                    operator_tools: str = "policy", structured_spec: str | None = None):
+                    operator_tools: str = "policy", structured_spec: str | None = None,
+                    journal_path: str | None = None):
     from axor_daemon.enforcer import DaemonEnforcer
     governance = None
+    config_sha256 = ""
     if governance_path:
+        import hashlib
         from axor_core.config import GovernanceConfig
         governance = GovernanceConfig.from_yaml(governance_path)
+        config_sha256 = hashlib.sha256(open(governance_path, "rb").read()).hexdigest()
+    journal = None
+    if journal_path:
+        from axor_daemon.journal import Journal
+        journal = Journal(os.path.expanduser(journal_path))
     return DaemonEnforcer(
         operator_policy=operator_policy,
         handlers=handlers,
@@ -120,6 +128,8 @@ def _build_enforcer(operator_policy, handlers: dict, sandbox_root: str | None = 
         confirm=confirm,
         operator_allowed=frozenset(handlers) if operator_tools == "handlers" else None,
         structured=_load_callable(structured_spec) if structured_spec else None,
+        journal=journal,
+        config_sha256=config_sha256,
     )
 
 
@@ -146,6 +156,7 @@ async def _run(
     l4_budget: int | None = None,
     l4_max_refusals: int | None = None,
     structured_spec: str | None = None,
+    journal_path: str | None = None,
 ) -> None:
     from axor_daemon.server import DaemonServer
 
@@ -164,6 +175,7 @@ async def _run(
         confirm=confirm,
         operator_tools=operator_tools,
         structured_spec=structured_spec,
+        journal_path=journal_path,
     )
     server = DaemonServer(enforcer=enforcer)
     await server.start(socket_path)
@@ -265,6 +277,14 @@ def main() -> None:
             "grant is computed. Also AXOR_DAEMON_STRUCTURED."
         ),
     )
+    start_p.add_argument(
+        "--journal", default=os.environ.get("AXOR_DAEMON_JOURNAL"), metavar="PATH",
+        help=(
+            "Durable grants (sqlite, WAL, synchronous=FULL): every grant, spend and the "
+            "session state they depend on is journaled, and a session survives a daemon "
+            "restart (hello with its session_id). Needs --governance. Also AXOR_DAEMON_JOURNAL."
+        ),
+    )
     start_p.add_argument("--l4-budget", type=int, default=None, metavar="N",
                          help="At most N confirmation questions per session (default: no limit).")
     start_p.add_argument("--l4-max-refusals", type=int, default=None, metavar="K",
@@ -283,7 +303,7 @@ def main() -> None:
 
     asyncio.run(_run(args.socket, args.policy, args.handlers, args.sandbox_root,
                      args.governance, args.confirm_socket, args.operator_tools,
-                     args.l4_budget, args.l4_max_refusals, args.structured))
+                     args.l4_budget, args.l4_max_refusals, args.structured, args.journal))
 
 
 if __name__ == "__main__":

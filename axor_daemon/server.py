@@ -15,7 +15,7 @@ from typing import Any
 
 from axor_core.contracts.daemon import encode_message, read_message, PROTOCOL_VERSION
 
-from axor_daemon.enforcer import DaemonEnforcer
+from axor_daemon.enforcer import DaemonEnforcer, SessionRejected
 
 _log = logging.getLogger("axor.daemon.server")
 
@@ -141,9 +141,23 @@ class DaemonServer:
             await writer.drain()
             return
 
-        session = self._enforcer.open_session(task=hello.get("task"))
+        try:
+            resume = {"session_id": hello["session_id"]} if hello.get("session_id") else {}
+            session = self._enforcer.open_session(task=hello.get("task"), **resume)
+        except SessionRejected as exc:
+            writer.write(encode_message({"type": "rejected", "reason": str(exc)}))
+            await writer.drain()
+            return
+        try:
+            await self._serve(reader, writer, session)
+        finally:
+            self._enforcer.close_session(session)
 
-        writer.write(encode_message({"type": "ready"}))
+    async def _serve(self, reader, writer, session) -> None:
+        ready = {"type": "ready"}
+        if session.session_id is not None:
+            ready["session_id"] = session.session_id  # --journal: resume with it
+        writer.write(encode_message(ready))
         await writer.drain()
 
         # ── Request loop ───────────────────────────────────────────────────────

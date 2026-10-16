@@ -171,7 +171,11 @@ class ThreadConfirmer:
 
     @staticmethod
     def _key(sink: str, args: Mapping[str, Any]) -> str:
-        return json.dumps([sink, args], sort_keys=True, default=str)
+        # a digest, not the call: the refused set is journaled (journal.py, field l4)
+        # and the arguments are the agent's, which may carry what a tool returned
+        import hashlib
+        return hashlib.sha256(json.dumps([sink, args], sort_keys=True, default=str)
+                              .encode()).hexdigest()
 
     def confirm(self, action: Any, call: tuple[str, Mapping[str, Any]]) -> bool:
         sink, args = call
